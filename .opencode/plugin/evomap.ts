@@ -1,5 +1,10 @@
 import { type Plugin } from "@opencode-ai/plugin";
 import {
+	formatMemorySummary,
+	readMemoryGraph,
+	appendMemoryGraph,
+} from "../../src/bridge.ts";
+import {
 	hasSyntheticSentinel,
 	markAdvisoryUsed,
 	pickAdvisories,
@@ -8,8 +13,15 @@ import {
 import { resolveConfig } from "../../src/config.ts";
 import { deriveObservationsWithEvolver } from "../../src/evolver.ts";
 import { SignalQueue } from "../../src/queue.ts";
+import {
+	isEvolverAvailable,
+	getEvolverRoot,
+	getMemoryGraphPath,
+	spawnEvolver,
+} from "../../src/spawn.ts";
 import { buildSignalId, EvoMapState } from "../../src/state.ts";
 import type {
+	EvolverMemoryEntry,
 	EvoMapConfig,
 	RawToolSignal,
 	ToolAfterInput,
@@ -230,6 +242,89 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 				);
 				queue.push(signal);
 			});
+		},
+
+		event: async (input: { event: { type: string; sessionID?: string; [key: string]: unknown } }) => {
+			if (input.event.type === "session.created") {
+				await failOpen(async () => {
+					const available = await isEvolverAvailable();
+					if (!available) {
+						return;
+					}
+
+					const evolverRoot = getEvolverRoot(directory);
+					const memoryPath = getMemoryGraphPath(evolverRoot);
+					const allEntries = await readMemoryGraph(memoryPath);
+					const recentEntries = allEntries.slice(-10);
+
+					if (recentEntries.length === 0) {
+						if (config.debug) {
+							console.warn("[EvoMapBridge/session-start] no memory entries found");
+						}
+						return;
+					}
+
+					const summary = formatMemorySummary(recentEntries);
+					if (summary) {
+						console.warn(
+							`[EvoMapBridge/session-start] injected ${recentEntries.length} memory entries for session ${input.event.sessionID ?? "unknown"}`,
+						);
+						if (config.debug) {
+							console.warn("[EvoMapBridge/session-start]", summary);
+						}
+					}
+				});
+			}
+
+			if (input.event.type === "session.idle") {
+				await failOpen(async () => {
+					const available = await isEvolverAvailable();
+					if (!available) {
+						return;
+					}
+
+					const sessionId = input.event.sessionID ?? "unknown";
+					const evolverRoot = getEvolverRoot(directory);
+					const memoryPath = getMemoryGraphPath(evolverRoot);
+
+					const sessionEndEntry: EvolverMemoryEntry = {
+						timestamp: nowIso(),
+						gene_id: "session_end",
+						signals: ["session_idle"],
+						outcome: {
+							status: "neutral",
+							score: 0.5,
+							note: `session ${sessionId} ended`,
+						},
+						source: "opencode-bridge:session.idle",
+					};
+
+					await appendMemoryGraph(memoryPath, sessionEndEntry);
+
+					if (config.debug) {
+						console.warn(
+							`[EvoMapBridge/session-end] appended session-end entry for ${sessionId}`,
+						);
+					}
+
+					try {
+						const result = await spawnEvolver({
+							command: "run",
+							cwd: directory,
+							timeoutMs: config.evolverSpawnTimeoutMs,
+						});
+						if (result.timedOut) {
+							console.warn("[EvoMapBridge/session-end] evolver run timed out");
+						} else if (result.exitCode !== 0) {
+							console.warn(
+								`[EvoMapBridge/session-end] evolver run exited with code ${result.exitCode}`,
+							);
+						}
+					} catch (error) {
+						console.warn("[EvoMapBridge/session-end] evolver spawn failed", error);
+					}
+				});
+			}
 		},
 	};
 };

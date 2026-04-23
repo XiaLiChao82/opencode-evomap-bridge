@@ -112,6 +112,17 @@ export async function appendMemoryGraph(
 	await appendFile(filePath, line, "utf8");
 }
 
+export function formatMemorySummary(entries: EvolverMemoryEntry[]): string | null {
+	if (entries.length === 0) {
+		return null;
+	}
+	const lines = entries.map(
+		(entry) =>
+			`- ${entry.timestamp}: ${entry.outcome.status} (${entry.gene_id}) - ${entry.outcome.note}`,
+	);
+	return `[EvoMap Memory] Last ${entries.length} evolution events:\n${lines.join("\n")}`;
+}
+
 export function evolverGEPObservations(memoryEntries: EvolverMemoryEntry[]): Observation[] {
 	const observations: Observation[] = [];
 	const seen = new Set<string>();
