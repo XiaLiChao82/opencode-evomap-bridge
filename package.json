@@ -1,0 +1,31 @@
+{
+	"name": "opencode-evomap-bridge",
+	"version": "0.1.0",
+	"description": "OpenCode plugin that derives and applies lightweight EvoMap-style execution guidance from tool activity",
+	"type": "module",
+	"main": "./.opencode/plugin/evomap.ts",
+	"files": [
+		".opencode/",
+		"src/",
+		"README.md"
+	],
+	"scripts": {
+		"test": "bun test ./tests/*.test.ts",
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@opencode-ai/plugin": ">=1.0.0"
+	},
+	"devDependencies": {
+		"@opencode-ai/plugin": "^1.0.134",
+		"@types/bun": "latest",
+		"typescript": "^5.9.3"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/XiaLiChao82/opencode-evomap-bridge"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
+}
