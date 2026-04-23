@@ -13,6 +13,9 @@ export const defaultConfig: EvoMapConfig = {
 	projectPromotionThreshold: 2,
 	internalErrorThreshold: 5,
 	debug: false,
+	evolverBinary: "evolver",
+	evolverSpawnTimeoutMs: 5000,
+	evolverFallbackToLocal: true,
 };
 
 export function resolveConfig(

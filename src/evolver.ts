@@ -1,3 +1,15 @@
+import {
+	appendMemoryGraph,
+	evolverGEPObservations,
+	readMemoryGraph,
+	signalToEvolverEntry,
+} from "./bridge.ts";
+import {
+	getEvolverRoot,
+	getMemoryGraphPath,
+	isEvolverAvailable,
+	spawnEvolver,
+} from "./spawn.ts";
 import type { EvoMapConfig, Observation, RawToolSignal, ToolName } from "./types.ts";
 import { nowIso, stableHash } from "./util.ts";
 
@@ -105,4 +117,73 @@ export function deriveObservations(
 	}
 
 	return observations;
+}
+
+export async function deriveObservationsWithEvolver(
+	signal: RawToolSignal,
+	recentSignals: RawToolSignal[],
+	config: EvoMapConfig,
+	directory: string,
+): Promise<Observation[]> {
+	try {
+		const available = await isEvolverAvailable();
+		if (!available) {
+			if (config.debug) {
+				console.warn("[EvoMapBridge/evolver] evolver not available, using local rules");
+			}
+			return config.evolverFallbackToLocal
+				? deriveObservations(signal, recentSignals, config)
+				: [];
+		}
+
+		const entry = signalToEvolverEntry(signal);
+		const evolverRoot = getEvolverRoot(directory);
+		const memoryPath = getMemoryGraphPath(evolverRoot);
+
+		await appendMemoryGraph(memoryPath, entry);
+
+		const result = await spawnEvolver({
+			command: "run",
+			cwd: directory,
+			timeoutMs: config.evolverSpawnTimeoutMs,
+		});
+
+		if (result.exitCode !== 0 || result.timedOut) {
+			if (config.debug) {
+				console.warn("[EvoMapBridge/evolver] spawn failed or timed out", {
+					exitCode: result.exitCode,
+					timedOut: result.timedOut,
+					stderr: result.stderr,
+				});
+			}
+			return config.evolverFallbackToLocal
+				? deriveObservations(signal, recentSignals, config)
+				: [];
+		}
+
+		const entries = await readMemoryGraph(memoryPath);
+		const observations = evolverGEPObservations(entries);
+
+		if (observations.length === 0 && config.evolverFallbackToLocal) {
+			if (config.debug) {
+				console.warn("[EvoMapBridge/evolver] no observations from evolver, using local rules");
+			}
+			return deriveObservations(signal, recentSignals, config);
+		}
+
+		if (config.debug) {
+			console.warn("[EvoMapBridge/evolver] derived observations from evolver", {
+				count: observations.length,
+			});
+		}
+
+		return observations;
+	} catch (error) {
+		if (config.debug) {
+			console.warn("[EvoMapBridge/evolver] error in evolver integration", error);
+		}
+		return config.evolverFallbackToLocal
+			? deriveObservations(signal, recentSignals, config)
+			: [];
+	}
 }

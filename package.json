@@ -14,7 +14,8 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"peerDependencies": {
-		"@opencode-ai/plugin": ">=1.0.0"
+		"@opencode-ai/plugin": ">=1.0.0",
+		"@evomap/evolver": ">=1.0.0"
 	},
 	"devDependencies": {
 		"@opencode-ai/plugin": "^1.0.134",

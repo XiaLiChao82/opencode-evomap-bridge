@@ -11,6 +11,9 @@ export interface EvoMapConfig {
 	projectPromotionThreshold: number;
 	internalErrorThreshold: number;
 	debug: boolean;
+	evolverBinary: string;
+	evolverSpawnTimeoutMs: number;
+	evolverFallbackToLocal: boolean;
 }
 
 export type ToolName =
@@ -109,4 +112,39 @@ export interface ToolAfterOutput {
 	title: string;
 	output: string;
 	metadata?: Record<string, unknown>;
+}
+
+// --- Evolver integration types ---
+
+export interface EvolverMemoryEntry {
+	timestamp: string;
+	gene_id: string;
+	signals: string[];
+	outcome: {
+		status: "success" | "failed" | "neutral";
+		score: number;
+		note: string;
+	};
+	source: string;
+}
+
+export interface EvolverSpawnOptions {
+	command: string;
+	args?: string[];
+	stdin?: string;
+	cwd?: string;
+	timeoutMs?: number;
+	env?: Record<string, string>;
+}
+
+export interface EvolverSpawnResult {
+	stdout: string;
+	stderr: string;
+	exitCode: number | null;
+	timedOut: boolean;
+}
+
+export interface EvolverDetection {
+	path: string;
+	version: string;
 }

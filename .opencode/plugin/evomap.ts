@@ -6,7 +6,7 @@ import {
 	renderAdvisories,
 } from "../../src/advisory.ts";
 import { resolveConfig } from "../../src/config.ts";
-import { deriveObservations } from "../../src/evolver.ts";
+import { deriveObservationsWithEvolver } from "../../src/evolver.ts";
 import { SignalQueue } from "../../src/queue.ts";
 import { buildSignalId, EvoMapState } from "../../src/state.ts";
 import type {
@@ -135,13 +135,14 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 		}
 	};
 
-	const queue = new SignalQueue(config, async (signal) => {
+	const queue = new SignalQueue(config, directory, async (signal, dir) => {
 		await state.appendSignal(signal);
 		const sessionState = await state.getSessionState(signal.sessionId);
-		const observations = deriveObservations(
+		const observations = await deriveObservationsWithEvolver(
 			signal,
 			sessionState.recentSignals,
 			config,
+			dir,
 		);
 		await state.appendObservations(signal.sessionId, observations);
 	});

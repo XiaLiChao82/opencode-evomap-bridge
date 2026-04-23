@@ -6,7 +6,8 @@ export class SignalQueue {
 
 	constructor(
 		private readonly config: EvoMapConfig,
-		private readonly onSignal: (signal: RawToolSignal) => Promise<void>,
+		private readonly directory: string,
+		private readonly onSignal: (signal: RawToolSignal, directory: string) => Promise<void>,
 	) {}
 
 	push(signal: RawToolSignal): void {
@@ -26,7 +27,7 @@ export class SignalQueue {
 				continue;
 			}
 			try {
-				await this.onSignal(signal);
+				await this.onSignal(signal, this.directory);
 			} catch (error) {
 				if (this.config.debug) {
 					console.warn("[EvoMapBridge] signal processing failed", error);
