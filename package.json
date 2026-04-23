@@ -1,13 +1,29 @@
 {
 	"name": "opencode-evomap-bridge",
 	"version": "0.1.0",
-	"description": "OpenCode plugin that derives and applies lightweight EvoMap-style execution guidance from tool activity",
+	"description": "OpenCode plugin bridging tool execution signals to @evomap/evolver CLI for evolutionary analysis",
+	"license": "MIT",
 	"type": "module",
 	"main": "./.opencode/plugin/evomap.ts",
+	"exports": {
+		".": "./.opencode/plugin/evomap.ts",
+		"./doctor": "./src/doctor.ts",
+		"./bridge": "./src/bridge.ts",
+		"./config": "./src/config.ts",
+		"./types": "./src/types.ts"
+	},
 	"files": [
 		".opencode/",
 		"src/",
 		"README.md"
+	],
+	"keywords": [
+		"opencode",
+		"opencode-plugin",
+		"evomap",
+		"evolver",
+		"ai-agent",
+		"tool-observation"
 	],
 	"scripts": {
 		"test": "bun test ./tests/*.test.ts",
