@@ -13,6 +13,8 @@
 - **Session 生命周期**：`session.created` 注入进化记忆，`session.idle` 触发 session-end 并写入结果
 - **Doctor 诊断工具**：检查 evolver 安装状态、memory_graph 读写、插件注册、配置有效性
 - 基于 **稳定 hooks**：`tool.execute.before` / `tool.execute.after` + `event`
+- **System prompt 注入**：通过 `experimental.chat.system.transform` 将 evolver 进化记忆注入系统提示
+- **Session compaction 上下文保留**：通过 `experimental.session.compacting` 在压缩时保留 observation 和记忆
 - 使用 **session / project** 两级状态
 - 带 fail-open、防回流、冷却时间、使用次数上限等保护机制
 
@@ -24,6 +26,8 @@
 OpenCode 插件 (适配层)
   │
   ├─ event(session.created) ─→ 读 evolver memory_graph → 注入进化记忆
+  │
+  ├─ experimental.chat.system.transform ─→ 将进化记忆注入系统提示
   │
   ├─ tool.execute.after ─→ buildSignal() → queue
   │                                         │
@@ -37,6 +41,8 @@ OpenCode 插件 (适配层)
   │                                   └─ fallback → 本地 deriveObservations()
   │
   ├─ tool.execute.before ←─ 读 observations → 选择 advisory
+  │
+  ├─ experimental.session.compacting ─→ 保留 observations + 记忆到压缩上下文
   │
   └─ event(session.idle) ─→ 构造 session-end 条目 → 写入 memory_graph
 ```
@@ -128,7 +134,7 @@ npm install -g @evomap/evolver
 使用 doctor 工具检查 evolver 集成健康状态：
 
 ```typescript
-import { runDoctor, formatDoctorResult } from "opencode-evomap-bridge/src/doctor.ts";
+import { runDoctor, formatDoctorResult } from "opencode-evomap-bridge/doctor";
 
 const result = await runDoctor(process.cwd());
 console.log(formatDoctorResult(result));
@@ -197,7 +203,6 @@ bun run test
 
 ## 限制
 
-- 不做 system prompt transform
 - 不做 repo 级自动规则落盘
 - 不接外部 mailbox / worker / Hub
 - advisory 是追加到工具输出，而不是前置改写模型推理链
@@ -207,9 +212,6 @@ bun run test
 
 ## 后续可扩展方向
 
-- 向 evolver 上游提交 OpenCode 平台支持
-- 接入 `experimental.session.compacting`
-- 接入 `experimental.chat.system.transform`
 - 集成 Hub / Proxy / skill store 网络能力
 - 增加人工审核的 repo-candidate 提升流程
 

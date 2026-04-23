@@ -326,5 +326,93 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 				});
 			}
 		},
+
+		"experimental.chat.system.transform": async (
+			_input: { sessionID?: string; model: unknown },
+			output: { system: string[] },
+		) => {
+			await failOpen(async () => {
+				const available = await isEvolverAvailable();
+				if (!available) {
+					const sessionState = _input.sessionID
+						? await state.getSessionState(_input.sessionID)
+						: null;
+					const projectState = state.getProjectState();
+					const activeObservations = [
+						...(sessionState?.observations ?? []),
+						...projectState.observations,
+					];
+					if (activeObservations.length === 0) {
+						return;
+					}
+					const summary = activeObservations
+						.slice(-5)
+						.map((obs) => `[${obs.type}] ${obs.message}`)
+						.join("\n");
+					output.system.push(
+						`[EvoMap Bridge] Active observations:\n${summary}`,
+					);
+					return;
+				}
+
+				const evolverRoot = getEvolverRoot(directory);
+				const memoryPath = getMemoryGraphPath(evolverRoot);
+				const allEntries = await readMemoryGraph(memoryPath);
+				const recentEntries = allEntries.slice(-10);
+
+				if (recentEntries.length === 0) {
+					return;
+				}
+
+				const memorySummary = formatMemorySummary(recentEntries);
+				if (memorySummary) {
+					output.system.push(memorySummary);
+				}
+			});
+		},
+
+		"experimental.session.compacting": async (
+			input: { sessionID: string },
+			output: { context: string[]; prompt?: string },
+		) => {
+			await failOpen(async () => {
+				const sessionState = await state.getSessionState(input.sessionID);
+				const projectState = state.getProjectState();
+
+				const parts: string[] = [];
+
+				if (sessionState.observations.length > 0) {
+					const obsSummary = sessionState.observations
+						.slice(-10)
+						.map((obs) => `[${obs.type}] ${obs.message}`)
+						.join("\n");
+					parts.push(`[EvoMap Bridge] Session observations:\n${obsSummary}`);
+				}
+
+				if (projectState.observations.length > 0) {
+					const projSummary = projectState.observations
+						.slice(-5)
+						.map((obs) => `[${obs.type}] ${obs.message}`)
+						.join("\n");
+					parts.push(`[EvoMap Bridge] Project observations:\n${projSummary}`);
+				}
+
+				const available = await isEvolverAvailable();
+				if (available) {
+					const evolverRoot = getEvolverRoot(directory);
+					const memoryPath = getMemoryGraphPath(evolverRoot);
+					const allEntries = await readMemoryGraph(memoryPath);
+					const recentEntries = allEntries.slice(-10);
+					const memorySummary = formatMemorySummary(recentEntries);
+					if (memorySummary) {
+						parts.push(memorySummary);
+					}
+				}
+
+				for (const part of parts) {
+					output.context.push(part);
+				}
+			});
+		},
 	};
 };
