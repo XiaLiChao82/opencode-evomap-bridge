@@ -14,7 +14,9 @@ export const defaultConfig: EvoMapConfig = {
 	internalErrorThreshold: 5,
 	debug: false,
 	evolverBinary: "evolver",
-	evolverSpawnTimeoutMs: 5000,
+	evolverRunTimeoutMs: 15_000,
+	evolverRunRetries: 1,
+	evolverRetryDelayMs: 300,
 	evolverFallbackToLocal: true,
 };
 

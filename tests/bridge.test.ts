@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
 	appendMemoryGraph,
 	evolverEntryToObservation,
-	evolverGEPObservations,
+	memoryEntriesToObservations,
 	readMemoryGraph,
 	signalToEvolverEntry,
 } from "../src/bridge.ts";
@@ -14,6 +14,7 @@ import {
 	getEvolverRoot,
 	getMemoryGraphPath,
 	isEvolverAvailable,
+	spawnEvolver,
 } from "../src/spawn.ts";
 import type { EvolverMemoryEntry, RawToolSignal } from "../src/types.ts";
 
@@ -27,6 +28,10 @@ function makeSignal(overrides: Partial<RawToolSignal>): RawToolSignal {
 		createdAt: overrides.createdAt ?? new Date().toISOString(),
 		args: overrides.args ?? { command: "bun test" },
 		pathHints: overrides.pathHints ?? [],
+		toolCategory: overrides.toolCategory ?? "execution",
+		argsSummary: overrides.argsSummary ?? "bun test",
+		sessionPhase: overrides.sessionPhase ?? "mid",
+		failureKind: overrides.failureKind ?? "none",
 		result: {
 			success: overrides.result?.success ?? false,
 			exitCode: overrides.result?.exitCode ?? 1,
@@ -70,8 +75,8 @@ describe("signalToEvolverEntry", () => {
 		expect(entry.outcome.status).toBe("success");
 		expect(entry.outcome.score).toBeGreaterThanOrEqual(0.7);
 		expect(entry.timestamp).toBe(signal.createdAt);
-		expect(entry.source).toBe("opencode-bridge:tool.after");
-		expect(entry.gene_id).toBe("ad_hoc");
+		expect(entry.source).toBe("opencode-bridge:mid");
+		expect(entry.gene_id).toBe("execution:bash:none");
 		expect(entry.signals).toContain("stable_success_plateau");
 	});
 
@@ -106,6 +111,7 @@ describe("evolverEntryToObservation", () => {
 		expect(observation!.message).toBe("loop detected");
 		expect(observation!.confidence).toBe(0.15);
 		expect(observation!.tool).toBe("unknown");
+		expect(observation!.source).toBe("evolver-log");
 	});
 
 	test("returns null for unknown signals", () => {
@@ -117,7 +123,7 @@ describe("evolverEntryToObservation", () => {
 	});
 });
 
-describe("evolverGEPObservations", () => {
+describe("memoryEntriesToObservations", () => {
 	test("deduplicates entries by fingerprint", () => {
 		const base = makeEvolverEntry({
 			gene_id: "gene-dupe",
@@ -128,7 +134,7 @@ describe("evolverGEPObservations", () => {
 			base,
 			{ ...base, timestamp: new Date(Date.now() + 1000).toISOString() },
 		];
-		const observations = evolverGEPObservations(entries);
+		const observations = memoryEntriesToObservations(entries);
 		// Both entries share gene_id and signal type → same fingerprint
 		expect(observations).toHaveLength(1);
 	});
@@ -216,5 +222,114 @@ describe("isEvolverAvailable", () => {
 describe("detectEvolver", () => {
 	test.skip("requires evolver installed", async () => {
 		await detectEvolver();
+	});
+});
+
+describe("spawnEvolver", () => {
+	test("returns structured metadata for successful execution", async () => {
+		const directory = await mkdtemp(path.join(tmpdir(), "evomap-spawn-"));
+		try {
+			const binDir = path.join(directory, "bin");
+			await mkdir(binDir, { recursive: true });
+			await writeFile(
+				path.join(binDir, "evolver"),
+				"#!/bin/sh\necho success\nexit 0\n",
+				"utf8",
+			);
+			await chmod(path.join(binDir, "evolver"), 0o755);
+
+			const result = await spawnEvolver({
+				command: "run",
+				cwd: directory,
+				timeoutMs: 500,
+				env: { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(result.timedOut).toBe(false);
+			expect(result.stdout.trim()).toBe("success");
+			expect(result.durationMs).toBeGreaterThanOrEqual(0);
+			expect(result.attempt).toBe(1);
+			expect(result.startedAt.length).toBeGreaterThan(0);
+			expect(result.finishedAt.length).toBeGreaterThan(0);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("marks timed out executions", async () => {
+		const directory = await mkdtemp(path.join(tmpdir(), "evomap-spawn-"));
+		try {
+			const binDir = path.join(directory, "bin");
+			await mkdir(binDir, { recursive: true });
+			await writeFile(
+				path.join(binDir, "evolver"),
+				"#!/bin/sh\nsleep 1\nexit 0\n",
+				"utf8",
+			);
+			await chmod(path.join(binDir, "evolver"), 0o755);
+
+			const result = await spawnEvolver({
+				command: "run",
+				cwd: directory,
+				timeoutMs: 50,
+				env: { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+			});
+
+			expect(result.timedOut).toBe(true);
+			expect(result.exitCode).toBeNull();
+			expect(result.attempt).toBe(1);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("retries failed executions and succeeds on second attempt", async () => {
+		const directory = await mkdtemp(path.join(tmpdir(), "evomap-spawn-"));
+		try {
+			const binDir = path.join(directory, "bin");
+			await mkdir(binDir, { recursive: true });
+			await writeFile(
+				path.join(binDir, "evolver"),
+				"#!/bin/sh\nif [ -f .retry-ok ]; then\n  echo success\n  exit 0\nfi\ntouch .retry-ok\necho first-fail >&2\nexit 1\n",
+				"utf8",
+			);
+			await chmod(path.join(binDir, "evolver"), 0o755);
+
+			const result = await spawnEvolver({
+				command: "run",
+				cwd: directory,
+				timeoutMs: 500,
+				retries: 1,
+				retryDelayMs: 10,
+				env: { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(result.timedOut).toBe(false);
+			expect(result.attempt).toBe(2);
+			expect(result.stdout.trim()).toBe("success");
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("returns structured failure when spawn cannot execute", async () => {
+		const directory = await mkdtemp(path.join(tmpdir(), "evomap-spawn-"));
+		try {
+			const result = await spawnEvolver({
+				command: "run",
+				cwd: directory,
+				timeoutMs: 100,
+				env: { PATH: "/definitely-missing-path" },
+			});
+
+			expect(result.exitCode).toBeNull();
+			expect(result.timedOut).toBe(false);
+			expect(result.stderr.length).toBeGreaterThan(0);
+			expect(result.attempt).toBe(1);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 });

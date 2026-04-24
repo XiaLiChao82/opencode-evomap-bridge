@@ -1,6 +1,6 @@
 import {
 	appendMemoryGraph,
-	evolverGEPObservations,
+	memoryEntriesToObservations,
 	readMemoryGraph,
 	signalToEvolverEntry,
 } from "./bridge.ts";
@@ -10,7 +10,7 @@ import {
 	isEvolverAvailable,
 	spawnEvolver,
 } from "./spawn.ts";
-import type { EvoMapConfig, Observation, RawToolSignal, ToolName } from "./types.ts";
+import type { EvoMapConfig, EvolverFallbackReason, EvolverRunStatus, Observation, RawToolSignal, ToolName } from "./types.ts";
 import { nowIso, stableHash } from "./util.ts";
 
 function countMatchingSignals(
@@ -29,6 +29,7 @@ function makeObservation(
 	occurrenceCount: number,
 	evidenceSignalIds: string[],
 	confidence: number,
+	source: Observation["source"] = "local-rules",
 ): Observation {
 	const createdAt = nowIso();
 	return {
@@ -46,6 +47,7 @@ function makeObservation(
 		createdAt,
 		lastSeenAt: createdAt,
 		projectEligible: occurrenceCount >= config.projectPromotionThreshold,
+		source,
 	};
 }
 
@@ -124,16 +126,21 @@ export async function deriveObservationsWithEvolver(
 	recentSignals: RawToolSignal[],
 	config: EvoMapConfig,
 	directory: string,
-): Promise<Observation[]> {
+): Promise<EvolverRunStatus> {
+	const fallback = (reason: EvolverFallbackReason): EvolverRunStatus => {
+		if (!config.evolverFallbackToLocal) {
+			return { ok: false, reason, observations: [] };
+		}
+		return { ok: false, reason, observations: deriveObservations(signal, recentSignals, config) };
+	};
+
 	try {
 		const available = await isEvolverAvailable();
 		if (!available) {
 			if (config.debug) {
 				console.warn("[EvoMapBridge/evolver] evolver not available, using local rules");
 			}
-			return config.evolverFallbackToLocal
-				? deriveObservations(signal, recentSignals, config)
-				: [];
+			return fallback("evolver-not-available");
 		}
 
 		const entry = signalToEvolverEntry(signal);
@@ -145,30 +152,41 @@ export async function deriveObservationsWithEvolver(
 		const result = await spawnEvolver({
 			command: "run",
 			cwd: directory,
-			timeoutMs: config.evolverSpawnTimeoutMs,
+			timeoutMs: config.evolverRunTimeoutMs,
+			retries: config.evolverRunRetries,
+			retryDelayMs: config.evolverRetryDelayMs,
+			label: "derive-observations",
 		});
 
-		if (result.exitCode !== 0 || result.timedOut) {
+		if (result.timedOut) {
 			if (config.debug) {
-				console.warn("[EvoMapBridge/evolver] spawn failed or timed out", {
-					exitCode: result.exitCode,
-					timedOut: result.timedOut,
-					stderr: result.stderr,
+				console.warn("[EvoMapBridge/evolver] spawn timed out", {
+					durationMs: result.durationMs,
+					attempt: result.attempt,
 				});
 			}
-			return config.evolverFallbackToLocal
-				? deriveObservations(signal, recentSignals, config)
-				: [];
+			return fallback("spawn-timed-out");
+		}
+
+		if (result.exitCode !== 0) {
+			if (config.debug) {
+				console.warn("[EvoMapBridge/evolver] spawn failed", {
+					exitCode: result.exitCode,
+					stderr: result.stderr,
+					attempt: result.attempt,
+				});
+			}
+			return fallback("spawn-failed");
 		}
 
 		const entries = await readMemoryGraph(memoryPath);
-		const observations = evolverGEPObservations(entries);
+		const observations = memoryEntriesToObservations(entries);
 
-		if (observations.length === 0 && config.evolverFallbackToLocal) {
+		if (observations.length === 0) {
 			if (config.debug) {
 				console.warn("[EvoMapBridge/evolver] no observations from evolver, using local rules");
 			}
-			return deriveObservations(signal, recentSignals, config);
+			return fallback("no-observations");
 		}
 
 		if (config.debug) {
@@ -177,13 +195,11 @@ export async function deriveObservationsWithEvolver(
 			});
 		}
 
-		return observations;
+		return { ok: true, source: "evolver-log", observations };
 	} catch (error) {
 		if (config.debug) {
 			console.warn("[EvoMapBridge/evolver] error in evolver integration", error);
 		}
-		return config.evolverFallbackToLocal
-			? deriveObservations(signal, recentSignals, config)
-			: [];
+		return fallback("unexpected-error");
 	}
 }

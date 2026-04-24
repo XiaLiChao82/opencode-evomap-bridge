@@ -12,7 +12,9 @@ export interface EvoMapConfig {
 	internalErrorThreshold: number;
 	debug: boolean;
 	evolverBinary: string;
-	evolverSpawnTimeoutMs: number;
+	evolverRunTimeoutMs: number;
+	evolverRunRetries: number;
+	evolverRetryDelayMs: number;
 	evolverFallbackToLocal: boolean;
 }
 
@@ -35,6 +37,10 @@ export interface RawToolSignal {
 	createdAt: string;
 	args: Record<string, unknown>;
 	pathHints: string[];
+	toolCategory: ToolCategory;
+	argsSummary: string;
+	sessionPhase: SessionPhase;
+	failureKind: FailureKind;
 	result: {
 		success: boolean;
 		exitCode: number | null;
@@ -44,10 +50,21 @@ export interface RawToolSignal {
 	};
 }
 
+export type ToolCategory = "file-read" | "file-write" | "search" | "diagnostics" | "execution" | "unknown";
+
+export type SessionPhase = "early" | "mid" | "late";
+
+export type FailureKind = "none" | "timeout" | "error" | "empty-result" | "permission-denied" | "unknown";
+
 export type ObservationType =
 	| "repeat_failure"
 	| "repeat_success"
 	| "slow_execution";
+
+export type ObservationSource =
+	| "local-rules"
+	| "evolver-log"
+	| "evolver-analysis";
 
 export interface Observation {
 	id: string;
@@ -64,7 +81,19 @@ export interface Observation {
 	createdAt: string;
 	lastSeenAt: string;
 	projectEligible: boolean;
+	source: ObservationSource;
 }
+
+export type EvolverRunStatus =
+	| { ok: true; source: ObservationSource; observations: Observation[] }
+	| { ok: false; reason: EvolverFallbackReason; observations: Observation[] };
+
+export type EvolverFallbackReason =
+	| "evolver-not-available"
+	| "spawn-failed"
+	| "spawn-timed-out"
+	| "no-observations"
+	| "unexpected-error";
 
 export interface ExecutionAdvisory {
 	id: string;
@@ -135,6 +164,9 @@ export interface EvolverSpawnOptions {
 	cwd?: string;
 	timeoutMs?: number;
 	env?: Record<string, string>;
+	retries?: number;
+	retryDelayMs?: number;
+	label?: string;
 }
 
 export interface EvolverSpawnResult {
@@ -142,6 +174,10 @@ export interface EvolverSpawnResult {
 	stderr: string;
 	exitCode: number | null;
 	timedOut: boolean;
+	startedAt: string;
+	finishedAt: string;
+	durationMs: number;
+	attempt: number;
 }
 
 export interface EvolverDetection {

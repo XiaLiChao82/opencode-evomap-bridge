@@ -14,6 +14,10 @@ function makeSignal(overrides: Partial<RawToolSignal>): RawToolSignal {
 		createdAt: overrides.createdAt ?? new Date().toISOString(),
 		args: overrides.args ?? { command: "bun test" },
 		pathHints: overrides.pathHints ?? [],
+		toolCategory: overrides.toolCategory ?? "execution",
+		argsSummary: overrides.argsSummary ?? "bun test",
+		sessionPhase: overrides.sessionPhase ?? "mid",
+		failureKind: overrides.failureKind ?? "none",
 		result: {
 			success: overrides.result?.success ?? false,
 			exitCode: overrides.result?.exitCode ?? 1,

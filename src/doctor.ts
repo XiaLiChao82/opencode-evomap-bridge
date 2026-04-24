@@ -6,6 +6,7 @@ import {
 	detectEvolver,
 	getEvolverRoot,
 	getMemoryGraphPath,
+	spawnEvolver,
 } from "./spawn.ts";
 
 export interface DoctorCheck {
@@ -177,14 +178,58 @@ function checkConfiguration(): DoctorCheck {
 			name: "Configuration Check",
 			status: "warn",
 			message: "evolverFallbackToLocal is false — plugin will produce no observations if evolver is unavailable",
-			detail: `evolverBinary=${config.evolverBinary}, timeout=${config.evolverSpawnTimeoutMs}ms, fallback=${config.evolverFallbackToLocal}`,
+			detail: `evolverBinary=${config.evolverBinary}, timeout=${config.evolverRunTimeoutMs}ms, retries=${config.evolverRunRetries}, fallback=${config.evolverFallbackToLocal}`,
 		};
 	}
 
 	return {
 		name: "Configuration Check",
 		status: "pass",
-		message: `Configuration valid (evolverBinary=${config.evolverBinary}, timeout=${config.evolverSpawnTimeoutMs}ms, fallback=${config.evolverFallbackToLocal})`,
+		message: `Configuration valid (evolverBinary=${config.evolverBinary}, timeout=${config.evolverRunTimeoutMs}ms, retries=${config.evolverRunRetries}, fallback=${config.evolverFallbackToLocal})`,
+	};
+}
+
+async function checkEvolverRun(directory: string): Promise<DoctorCheck> {
+	const detection = await detectEvolver();
+	if (!detection) {
+		return {
+			name: "Evolver Run Check",
+			status: "warn",
+			message: "Skipped — evolver CLI not available",
+		};
+	}
+
+	const result = await spawnEvolver({
+		command: "run",
+		cwd: directory,
+		timeoutMs: 3000,
+		retries: 0,
+		label: "doctor-run-check",
+	});
+
+	if (result.timedOut) {
+		return {
+			name: "Evolver Run Check",
+			status: "warn",
+			message: `evolver run timed out after ${result.durationMs}ms`,
+			detail: `label=doctor-run-check, attempt=${result.attempt}`,
+		};
+	}
+
+	if (result.exitCode !== 0) {
+		return {
+			name: "Evolver Run Check",
+			status: "warn",
+			message: `evolver run exited with code ${result.exitCode}`,
+			detail: result.stderr ? result.stderr.slice(0, 200) : undefined,
+		};
+	}
+
+	return {
+		name: "Evolver Run Check",
+		status: "pass",
+		message: `evolver run completed in ${result.durationMs}ms`,
+		detail: `attempt=${result.attempt}`,
 	};
 }
 
@@ -198,6 +243,7 @@ export async function runDoctor(directory: string): Promise<DoctorResult> {
 	checks.push(await checkMemoryGraph(directory));
 	checks.push(await checkPluginRegistration(directory));
 	checks.push(checkConfiguration());
+	checks.push(await checkEvolverRun(directory));
 
 	const allPass = checks.every((c) => c.status === "pass");
 	const failCount = checks.filter((c) => c.status === "fail").length;

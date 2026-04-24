@@ -1,4 +1,5 @@
 import type { EvolverDetection, EvolverSpawnOptions, EvolverSpawnResult } from "./types.ts";
+import { nowIso } from "./util.ts";
 
 let cachedDetection: EvolverDetection | null = null;
 let detectionAttempted = false;
@@ -52,59 +53,106 @@ export async function spawnEvolver(options: EvolverSpawnOptions): Promise<Evolve
 		cwd,
 		timeoutMs = 5000,
 		env,
+		retries = 0,
+		retryDelayMs = 0,
 	} = options;
 
 	const procArgs = [command, ...args];
 
-	try {
-		const proc = Bun.spawn(["evolver", ...procArgs], {
-			stdout: "pipe",
-			stderr: "pipe",
-			stdin: stdin ? "pipe" : undefined,
-			cwd,
-			env: env ? { ...process.env, ...env } : process.env,
-		});
+	let lastResult: EvolverSpawnResult | null = null;
 
-		if (stdin && proc.stdin) {
-			proc.stdin.write(new TextEncoder().encode(stdin));
-			proc.stdin.end();
-		}
+	for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
+		const startedAt = nowIso();
+		const startedMs = Date.now();
 
-		const timeoutPromise = new Promise<"timeout">((resolve) => {
-			setTimeout(() => resolve("timeout"), timeoutMs);
-		});
+		try {
+			const proc = Bun.spawn(["evolver", ...procArgs], {
+				stdout: "pipe",
+				stderr: "pipe",
+				stdin: stdin ? "pipe" : undefined,
+				cwd,
+				env: env ? { ...process.env, ...env } : process.env,
+			});
 
-		const result = await Promise.race([
-			(async () => {
-				const exitCode = await proc.exited;
-				const stdout = await new Response(proc.stdout).text();
-				const stderr = await new Response(proc.stderr).text();
-				return { stdout, stderr, exitCode, timedOut: false } as EvolverSpawnResult;
-			})(),
-			timeoutPromise,
-		]);
+			if (stdin && proc.stdin) {
+				proc.stdin.write(new TextEncoder().encode(stdin));
+				proc.stdin.end();
+			}
 
-		if (result === "timeout") {
-			proc.kill();
-			const stdout = await new Response(proc.stdout).text().catch(() => "");
-			const stderr = await new Response(proc.stderr).text().catch(() => "");
-			return {
-				stdout,
-				stderr,
+			const timeoutPromise = new Promise<"timeout">((resolve) => {
+				setTimeout(() => resolve("timeout"), timeoutMs);
+			});
+
+			const raced = await Promise.race([
+				(async () => {
+					const exitCode = await proc.exited;
+					const stdout = await new Response(proc.stdout).text();
+					const stderr = await new Response(proc.stderr).text();
+					return { exitCode, stdout, stderr, timedOut: false };
+				})(),
+				timeoutPromise,
+			]);
+
+			if (raced === "timeout") {
+				proc.kill();
+				const stdout = await new Response(proc.stdout).text().catch(() => "");
+				const stderr = await new Response(proc.stderr).text().catch(() => "");
+				lastResult = {
+					stdout,
+					stderr,
+					exitCode: null,
+					timedOut: true,
+					startedAt,
+					finishedAt: nowIso(),
+					durationMs: Date.now() - startedMs,
+					attempt,
+				};
+			} else {
+				lastResult = {
+					stdout: raced.stdout,
+					stderr: raced.stderr,
+					exitCode: raced.exitCode,
+					timedOut: raced.timedOut,
+					startedAt,
+					finishedAt: nowIso(),
+					durationMs: Date.now() - startedMs,
+					attempt,
+				};
+			}
+		} catch (error) {
+			lastResult = {
+				stdout: "",
+				stderr: String(error),
 				exitCode: null,
-				timedOut: true,
+				timedOut: false,
+				startedAt,
+				finishedAt: nowIso(),
+				durationMs: Date.now() - startedMs,
+				attempt,
 			};
 		}
 
-		return result;
-	} catch (error) {
-		return {
+		if (lastResult.exitCode === 0 && !lastResult.timedOut) {
+			return lastResult;
+		}
+
+		if (attempt <= retries && retryDelayMs > 0) {
+			await Bun.sleep(retryDelayMs);
+		}
+	}
+
+	return (
+		lastResult ?? {
 			stdout: "",
-			stderr: String(error),
+			stderr: "spawn did not execute",
 			exitCode: null,
 			timedOut: false,
-		};
-	}
+			startedAt: nowIso(),
+			finishedAt: nowIso(),
+			durationMs: 0,
+			attempt: 0,
+		}
+	);
 }
 
 export async function isEvolverAvailable(): Promise<boolean> {

@@ -28,6 +28,7 @@ describe("EvoMapState", () => {
 				createdAt: new Date().toISOString(),
 				lastSeenAt: new Date().toISOString(),
 				projectEligible: true,
+			source: "local-rules",
 			};
 
 			await state.appendObservations("session-1", [observation]);

@@ -21,13 +21,16 @@ import {
 } from "../../src/spawn.ts";
 import { buildSignalId, EvoMapState } from "../../src/state.ts";
 import type {
-	EvolverMemoryEntry,
 	EvoMapConfig,
+	EvolverMemoryEntry,
+	FailureKind,
 	RawToolSignal,
+	SessionPhase,
 	ToolAfterInput,
 	ToolAfterOutput,
 	ToolBeforeInput,
 	ToolBeforeOutput,
+	ToolCategory,
 	ToolName,
 } from "../../src/types.ts";
 import {
@@ -54,6 +57,53 @@ function normalizeToolName(tool: string): ToolName {
 		return tool as ToolName;
 	}
 	return "unknown";
+}
+
+const toolCategoryMap: Record<ToolName, ToolCategory> = {
+	read: "file-read",
+	write: "file-write",
+	edit: "file-write",
+	bash: "execution",
+	glob: "search",
+	grep: "search",
+	lsp_diagnostics: "diagnostics",
+	unknown: "unknown",
+};
+
+function classifyTool(tool: ToolName): ToolCategory {
+	return toolCategoryMap[tool] ?? "unknown";
+}
+
+function classifyFailure(result: RawToolSignal["result"]): FailureKind {
+	if (result.success) return "none";
+	if (result.exitCode === null) return "timeout";
+	if (result.exitCode === 1) return "error";
+	if (result.errorSnippet.includes("permission") || result.errorSnippet.includes("EACCES")) return "permission-denied";
+	if (result.errorSnippet.includes("empty") || result.errorSnippet.includes("no match")) return "empty-result";
+	return "unknown";
+}
+
+function computeSessionPhase(signalCount: number): SessionPhase {
+	if (signalCount < 5) return "early";
+	if (signalCount < 15) return "mid";
+	return "late";
+}
+
+function summarizeArgs(tool: ToolName, args: Record<string, unknown>): string {
+	switch (tool) {
+		case "read":
+		case "write":
+		case "edit":
+			return typeof args.filePath === "string" ? args.filePath : "";
+		case "bash":
+			return typeof args.command === "string" ? args.command.slice(0, 80) : "";
+		case "glob":
+			return typeof args.pattern === "string" ? args.pattern : "";
+		case "grep":
+			return typeof args.pattern === "string" ? args.pattern : "";
+		default:
+			return "";
+	}
 }
 
 function isSuccessful(output: ToolAfterOutput): boolean {
@@ -93,26 +143,33 @@ function buildSignal(
 	output: ToolAfterOutput,
 	directory: string,
 	config: EvoMapConfig,
+	sessionSignalCount: number,
 ): RawToolSignal {
 	const originalOutput = output.output;
+	const tool = normalizeToolName(input.tool);
+	const result = {
+		success: isSuccessful(output),
+		exitCode: getExitCode(output),
+		durationMs: getDurationMs(output),
+		outputDigest: stableHash(originalOutput),
+		errorSnippet: isSuccessful(output)
+			? ""
+			: clampText(originalOutput, config.maxSignalSummaryChars),
+	};
 	return {
 		id: buildSignalId(input.sessionID, input.callID, input.tool),
 		sessionId: input.sessionID,
 		projectId: getProjectKey(directory),
-		tool: normalizeToolName(input.tool),
+		tool,
 		callId: input.callID,
 		createdAt: nowIso(),
 		args: { ...args },
 		pathHints: pathHintsFromArgs(args),
-		result: {
-			success: isSuccessful(output),
-			exitCode: getExitCode(output),
-			durationMs: getDurationMs(output),
-			outputDigest: stableHash(originalOutput),
-			errorSnippet: isSuccessful(output)
-				? ""
-				: clampText(originalOutput, config.maxSignalSummaryChars),
-		},
+		toolCategory: classifyTool(tool),
+		argsSummary: summarizeArgs(tool, args),
+		sessionPhase: computeSessionPhase(sessionSignalCount),
+		failureKind: classifyFailure(result),
+		result,
 	};
 }
 
@@ -150,13 +207,13 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 	const queue = new SignalQueue(config, directory, async (signal, dir) => {
 		await state.appendSignal(signal);
 		const sessionState = await state.getSessionState(signal.sessionId);
-		const observations = await deriveObservationsWithEvolver(
+		const runStatus = await deriveObservationsWithEvolver(
 			signal,
 			sessionState.recentSignals,
 			config,
 			dir,
 		);
-		await state.appendObservations(signal.sessionId, observations);
+		await state.appendObservations(signal.sessionId, runStatus.observations);
 	});
 
 	return {
@@ -239,6 +296,7 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 					{ ...output, output: originalOutput },
 					directory,
 					config,
+					(await state.getSessionState(input.sessionID)).recentSignals.length,
 				);
 				queue.push(signal);
 			});
@@ -311,7 +369,10 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 						const result = await spawnEvolver({
 							command: "run",
 							cwd: directory,
-							timeoutMs: config.evolverSpawnTimeoutMs,
+							timeoutMs: config.evolverRunTimeoutMs,
+							retries: config.evolverRunRetries,
+							retryDelayMs: config.evolverRetryDelayMs,
+							label: "session-idle",
 						});
 						if (result.timedOut) {
 							console.warn("[EvoMapBridge/session-end] evolver run timed out");

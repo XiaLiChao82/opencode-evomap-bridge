@@ -110,7 +110,9 @@ npm install -g @evomap/evolver
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `evolverBinary` | `"evolver"` | evolver CLI 二进制名称 |
-| `evolverSpawnTimeoutMs` | `5000` | evolver spawn 超时（毫秒） |
+| `evolverRunTimeoutMs` | `15000` | evolver run 超时（毫秒） |
+| `evolverRunRetries` | `1` | evolver run 失败重试次数 |
+| `evolverRetryDelayMs` | `300` | 重试间隔（毫秒） |
 | `evolverFallbackToLocal` | `true` | evolver 不可用时是否 fallback 到本地规则 |
 
 其他配置项：
@@ -156,7 +158,8 @@ console.log(formatDoctorResult(result));
     → /path/to/project/.evomap
   ⚠ Memory Graph Access: memory_graph.jsonl not found (will be created on first use)
   ✓ Plugin Registration: Plugin file exists at .opencode/plugin/evomap.ts
-  ✓ Configuration Check: Configuration valid (evolverBinary=evolver, timeout=5000ms, fallback=true)
+  ✓ Configuration Check: Configuration valid (evolverBinary=evolver, timeout=15000ms, retries=1, fallback=true)
+  ✓ Evolver Run Check: evolver run completed in 234ms
 
 Summary: 2 warnings
 ```
@@ -195,14 +198,14 @@ bun run test
 
 ## 测试
 
-27 个测试覆盖全部模块：
+30 个测试覆盖全部模块：
 
 | 测试文件 | 覆盖 |
 |----------|------|
 | `tests/evolver.test.ts` | 本地 observation 规则 + advisory 渲染 |
 | `tests/state.test.ts` | session/project 状态管理 |
-| `tests/bridge.test.ts` | 格式转换、memory_graph 读写、spawn 路径 |
-| `tests/doctor.test.ts` | 5 项诊断检查 + 格式化输出 |
+| `tests/bridge.test.ts` | 格式转换、memory_graph 读写、spawn 路径与重试 |
+| `tests/doctor.test.ts` | 6 项诊断检查（含 evolver run check） + 格式化输出 |
 
 ---
 

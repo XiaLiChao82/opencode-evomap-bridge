@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
 	EvolverMemoryEntry,
 	Observation,
+	ObservationSource,
 	ObservationType,
 	RawToolSignal,
 	ToolName,
@@ -29,6 +30,11 @@ export function signalToEvolverEntry(signal: RawToolSignal): EvolverMemoryEntry 
 
 	if (!signal.result.success) {
 		evolverSignals.push("log_error");
+		if (signal.failureKind === "timeout") {
+			evolverSignals.push("timeout");
+		} else if (signal.failureKind === "permission-denied") {
+			evolverSignals.push("permission_denied");
+		}
 	}
 	if ((signal.result.durationMs ?? 0) > 0 && signal.result.success) {
 		evolverSignals.push("stable_success_plateau");
@@ -39,19 +45,21 @@ export function signalToEvolverEntry(signal: RawToolSignal): EvolverMemoryEntry 
 		? 0.7 + Math.random() * 0.2
 		: 0.1 + Math.random() * 0.2;
 
+	const geneId = `${signal.toolCategory}:${signal.tool}:${signal.failureKind}`;
+
 	return {
 		timestamp: signal.createdAt,
-		gene_id: "ad_hoc",
+		gene_id: geneId,
 		signals: evolverSignals.length > 0 ? evolverSignals : ["log_error"],
 		outcome: {
 			status,
 			score: Math.round(score * 100) / 100,
 			note: clampText(
-				`${signal.tool} call: ${status}${signal.result.errorSnippet ? ` - ${signal.result.errorSnippet}` : ""}`,
+				`${signal.tool}(${signal.argsSummary || signal.toolCategory}): ${status}${signal.result.errorSnippet ? ` - ${signal.result.errorSnippet}` : ""}`,
 				200,
 			),
 		},
-		source: "opencode-bridge:tool.after",
+		source: `opencode-bridge:${signal.sessionPhase}`,
 	};
 }
 
@@ -79,6 +87,7 @@ export function evolverEntryToObservation(entry: EvolverMemoryEntry): Observatio
 		createdAt,
 		lastSeenAt: createdAt,
 		projectEligible: false,
+		source: "evolver-log" as ObservationSource,
 	};
 }
 
@@ -123,7 +132,7 @@ export function formatMemorySummary(entries: EvolverMemoryEntry[]): string | nul
 	return `[EvoMap Memory] Last ${entries.length} evolution events:\n${lines.join("\n")}`;
 }
 
-export function evolverGEPObservations(memoryEntries: EvolverMemoryEntry[]): Observation[] {
+export function memoryEntriesToObservations(memoryEntries: EvolverMemoryEntry[]): Observation[] {
 	const observations: Observation[] = [];
 	const seen = new Set<string>();
 

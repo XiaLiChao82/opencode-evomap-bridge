@@ -27,12 +27,12 @@ function makeEvolverEntry(
 }
 
 describe("runDoctor", () => {
-	test("returns result with all 5 expected checks", async () => {
+	test("returns result with all 6 expected checks", async () => {
 		const directory = await mkdtemp(path.join(tmpdir(), "doctor-test-"));
 		try {
 			const result = await runDoctor(directory);
 
-			expect(result.checks).toHaveLength(5);
+			expect(result.checks).toHaveLength(6);
 			expect(result).toHaveProperty("healthy");
 			expect(result).toHaveProperty("summary");
 			expect(typeof result.healthy).toBe("boolean");
@@ -44,6 +44,7 @@ describe("runDoctor", () => {
 			expect(names).toContain("Memory Graph Access");
 			expect(names).toContain("Plugin Registration");
 			expect(names).toContain("Configuration Check");
+			expect(names).toContain("Evolver Run Check");
 
 			for (const check of result.checks) {
 				expect(["pass", "fail", "warn"]).toContain(check.status);

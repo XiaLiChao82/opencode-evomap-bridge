@@ -1,7 +1,7 @@
 # EvoMap Bridge — Blueprint
 
-> **版本**: v0.1.0  
-> **日期**: 2026-04-23  
+> **版本**: v0.2.0  
+> **日期**: 2026-04-24  
 > **定位**: 实施蓝图，反映实际代码结构。  
 
 ---
@@ -21,7 +21,7 @@ opencode-evomap-bridge/
 │   ├── spawn.ts                        # evolver CLI 检测、spawn、超时、路径解析
 │   ├── bridge.ts                       # OpenCode signal ↔ evolver 格式转换、memory_graph 读写
 │   ├── evolver.ts                      # deriveObservationsWithEvolver + 本地 fallback
-│   ├── doctor.ts                       # 诊断工具（5 项检查 + 格式化输出）
+│   ├── doctor.ts                       # 诊断工具（6 项检查 + 格式化输出）
 │   ├── advisory.ts                     # advisory 选择、标记、渲染
 │   ├── state.ts                        # session / project 两级状态管理
 │   ├── queue.ts                        # 异步信号队列（microtask-based）
@@ -32,8 +32,8 @@ opencode-evomap-bridge/
 ├── tests/
 │   ├── evolver.test.ts                 # 本地 observation 规则 + advisory 渲染
 │   ├── state.test.ts                   # session/project 状态管理
-│   ├── bridge.test.ts                  # 格式转换、memory_graph 读写、spawn 路径
-│   └── doctor.test.ts                  # 5 项诊断检查 + 格式化输出
+│   ├── bridge.test.ts                  # 格式转换、memory_graph 读写、spawn 路径与重试
+│   └── doctor.test.ts                  # 6 项诊断检查（含 evolver run check） + 格式化输出
 │
 ├── README.md                           # 中文文档
 ├── README_EN.md                        # 英文文档
@@ -49,8 +49,8 @@ opencode-evomap-bridge/
 | **evomap.ts** | 插件入口。注册全部 7 个 hook handlers，协调各模块。 | OpenCode hook API | hook handlers | 无 |
 | **spawn.ts** | 检测 evolver CLI 可用性、spawn 子进程、管理超时、解析路径。 | 命令名 + cwd | `EvolverDetection` / `EvolverSpawnResult` | 子进程 |
 | **bridge.ts** | OpenCode signal ↔ evolver `EvolverMemoryEntry` 格式互转；memory_graph.jsonl 读写。 | `RawToolSignal` / JSONL | `EvolverMemoryEntry[]` | 文件读写 |
-| **evolver.ts** | 核心决策：evolver 可用时走 CLI 链路，不可用时 fallback 到本地规则。 | signal + history + config | `Observation[]` | 可能 spawn evolver |
-| **doctor.ts** | 5 项诊断检查（CLI、root dir、memory_graph、plugin、config）+ 格式化输出。 | directory path | `DoctorResult` | 读文件系统 |
+| **evolver.ts** | 核心决策：evolver 可用时走 CLI 链路，不可用时 fallback 到本地规则。返回 `EvolverRunStatus` 包含成功/失败原因。 | signal + history + config | `EvolverRunStatus` | 可能 spawn evolver |
+| **doctor.ts** | 6 项诊断检查（CLI、root dir、memory_graph、plugin、config、run check）+ 格式化输出。 | directory path | `DoctorResult` | 读文件系统、可能 spawn evolver |
 | **advisory.ts** | 从 observations 中选择 advisory、标记已使用、渲染为 LLM 可读文本。 | observations + config | `ExecutionAdvisory[]` + rendered text | 无 |
 | **state.ts** | SessionState + ProjectState 两级状态管理。内存持有 + JSON 持久化。 | CRUD ops | `SessionState` / `ProjectState` | 文件读写 |
 | **queue.ts** | 内存异步队列。push → 内部 microtask 消费 → callback 处理。 | `RawToolSignal` | callback invocation | 异步 |
@@ -111,7 +111,7 @@ onSignal(signal, directory):
       ├─ evolver 可用?
       │   ├─ signalToEvolverEntry(signal) → 写入 memory_graph.jsonl
       │   ├─ spawnEvolver({ command: "run", cwd }) → 触发 GEP 进化
-      │   └─ readMemoryGraph → evolverGEPObservations → 返回 observations
+      │   └─ readMemoryGraph → memoryEntriesToObservations → 返回 observations
       └─ fallback: deriveObservations(signal, history, config)
           ├─ repeat_failure: 同一工具连续失败 N 次
           ├─ repeat_success: 同一模式连续成功
@@ -130,23 +130,33 @@ state.appendObservations(sessionId, observations)
 ```typescript
 // ─── types.ts ───
 
-type ToolName = "bash" | "read" | "write" | "edit" | "glob" | "grep" | "unknown";
+type ToolName = "bash" | "read" | "write" | "edit" | "glob" | "grep" | "lsp_diagnostics" | "unknown";
 type ObservationType = "repeat_failure" | "repeat_success" | "slow_execution";
+type ObservationSource = "local-rules" | "evolver-log" | "evolver-analysis";
+type ToolCategory = "file-read" | "file-write" | "search" | "diagnostics" | "execution" | "unknown";
+type SessionPhase = "early" | "mid" | "late";
+type FailureKind = "none" | "timeout" | "error" | "empty-result" | "permission-denied" | "unknown";
 
 interface RawToolSignal {
   id: string;
   sessionId: string;
-  tool: ToolName;
-  args: Record<string, unknown>;
-  result: {
-    exitCode: number | null;
-    success: boolean;
-    durationMs: number;
-    outputDigest: string;
-    errorSnippet: string | null;
-  };
-  timestamp: string;
   projectId: string;
+  tool: ToolName;
+  callId: string;
+  createdAt: string;
+  args: Record<string, unknown>;
+  pathHints: string[];
+  toolCategory: ToolCategory;
+  argsSummary: string;
+  sessionPhase: SessionPhase;
+  failureKind: FailureKind;
+  result: {
+    success: boolean;
+    exitCode: number | null;
+    durationMs: number | null;
+    outputDigest: string;
+    errorSnippet: string;
+  };
 }
 
 interface Observation {
@@ -164,20 +174,32 @@ interface Observation {
   createdAt: string;
   lastSeenAt: string;
   projectEligible: boolean;
+  source: ObservationSource;
 }
+
+type EvolverRunStatus =
+  | { ok: true; source: ObservationSource; observations: Observation[] }
+  | { ok: false; reason: EvolverFallbackReason; observations: Observation[] };
+
+type EvolverFallbackReason =
+  | "evolver-not-available"
+  | "spawn-failed"
+  | "spawn-timed-out"
+  | "no-observations"
+  | "unexpected-error";
 
 interface ExecutionAdvisory {
   id: string;
   tool: ToolName;
+  message: string;
   observationId: string;
-  type: ObservationType;
-  body: string;
-  fingerprint: string;
-  targetTools: ToolName[];
-  injectedCount: number;
+  createdAt: string;
+  lastUsedAt: string | null;
+  useCount: number;
   maxUses: number;
-  lastInjectedAt: string;
-  sourceLevel: "session" | "project";
+  cooldownUntil: string | null;
+  pathHints: string[];
+  source: "session" | "project";
 }
 
 interface SessionState {
@@ -207,23 +229,31 @@ interface EvolverMemoryEntry {
 }
 
 interface EvolverDetection {
-  available: boolean;
   path: string;
   version: string;
 }
 
 interface EvolverSpawnOptions {
   command: string;
-  cwd: string;
-  timeoutMs: number;
-  input?: string;
+  args?: string[];
+  stdin?: string;
+  cwd?: string;
+  timeoutMs?: number;
+  env?: Record<string, string>;
+  retries?: number;
+  retryDelayMs?: number;
+  label?: string;
 }
 
 interface EvolverSpawnResult {
-  exitCode: number | null;
   stdout: string;
   stderr: string;
+  exitCode: number | null;
   timedOut: boolean;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  attempt: number;
 }
 
 // ─── 配置 ───
@@ -240,7 +270,9 @@ interface EvoMapConfig {
   slowExecutionMs: number;
   internalErrorThreshold: number;
   evolverBinary: string;
-  evolverSpawnTimeoutMs: number;
+  evolverRunTimeoutMs: number;
+  evolverRunRetries: number;
+  evolverRetryDelayMs: number;
   evolverFallbackToLocal: boolean;
 }
 ```
@@ -301,6 +333,18 @@ interface EvoMapConfig {
 - `README_EN.md` — 英文版文档
 - `BLUEPRINT.md` — 更新为实际实现
 
+### Phase A: 信号语义增强与 EvolverRunStatus ✅
+- **A1**: `spawn.ts` — 重试机制、运行元数据（startedAt/finishedAt/durationMs/attempt）
+- **A1**: `config.ts` — `evolverRunTimeoutMs`/`evolverRunRetries`/`evolverRetryDelayMs`
+- **A2**: `evolver.ts` — `EvolverRunStatus` 返回类型，5 种 fallback reason
+- **A2**: `doctor.ts` — 第 6 项检查 "Evolver Run Check"（实际试跑 evolver run）
+- **A3**: `RawToolSignal` — `toolCategory`/`argsSummary`/`sessionPhase`/`failureKind`
+- **A3**: `signalToEvolverEntry()` — 语义化 `gene_id`（`toolCategory:tool:failureKind`）
+- **A4**: `evolverGEPObservations` → `memoryEntriesToObservations`（重命名）
+- **A4**: `Observation.source` — 区分 `local-rules`/`evolver-log`/`evolver-analysis`
+- `tests/bridge.test.ts` — 新增 4 个 spawn 测试（成功/超时/重试/无法执行）
+- `tests/doctor.test.ts` — 更新为 6 项检查
+
 ---
 
 ## G) 端到端场景
@@ -321,10 +365,11 @@ interface EvoMapConfig {
 
 4. queue callback:
    → deriveObservationsWithEvolver:
-     → signalToEvolverEntry → appendMemoryGraph
-     → spawnEvolver({ command: "run" })
-     → readMemoryGraph → evolverGEPObservations
-   → state.appendObservations(observations)
+      → signalToEvolverEntry → appendMemoryGraph
+      → spawnEvolver({ command: "run", retries: 1 })
+      → readMemoryGraph → memoryEntriesToObservations
+      → returns EvolverRunStatus { ok: true, source: "evolver-log", observations }
+   → state.appendObservations(runStatus.observations)
 
 5. bash("npm install") → tool.execute.before
    → pickAdvisories(session + project observations)
@@ -378,8 +423,8 @@ interface EvoMapConfig {
 | 冷却时间 | 同一 advisory 两次注入间隔 ≥ `advisoryCooldownMs` | advisory.ts |
 | 使用上限 | 每个 advisory 最多使用 `maxAdvisoryUses` 次 | advisory.ts |
 | 每次上限 | 每次工具调用最多注入 `maxAdvisoriesPerCall` 条 | advisory.ts |
-| 超时保护 | evolver spawn 超时 `evolverSpawnTimeoutMs` 后终止 | spawn.ts |
-| 自动降级 | evolver 不可用时自动 fallback 到本地规则 | evolver.ts |
+| 超时保护 | evolver spawn 超时 `evolverRunTimeoutMs` 后终止，支持 `evolverRunRetries` 次重试 | spawn.ts |
+| 自动降级 | evolver 不可用时自动 fallback 到本地规则，`EvolverRunStatus` 记录原因 | evolver.ts |
 
 ---
 
