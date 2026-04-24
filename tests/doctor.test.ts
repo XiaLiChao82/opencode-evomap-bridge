@@ -119,6 +119,42 @@ describe("runDoctor", () => {
 		}
 	});
 
+	test("plugin registration passes when plugin is installed from npm", async () => {
+		const directory = await mkdtemp(path.join(tmpdir(), "doctor-test-"));
+		try {
+			const packageDir = path.join(
+				directory,
+				"node_modules",
+				"opencode-evomap-bridge",
+			);
+			const pluginDir = path.join(packageDir, ".opencode", "plugin");
+			await mkdir(pluginDir, { recursive: true });
+			await writeFile(
+				path.join(packageDir, "package.json"),
+				JSON.stringify({
+					name: "opencode-evomap-bridge",
+					main: "./.opencode/plugin/evomap.ts",
+				}),
+				"utf8",
+			);
+			await writeFile(
+				path.join(pluginDir, "evomap.ts"),
+				"export default {};",
+				"utf8",
+			);
+
+			const result = await runDoctor(directory);
+			const pluginCheck = result.checks.find(
+				(c) => c.name === "Plugin Registration",
+			);
+			expect(pluginCheck).toBeDefined();
+			expect(pluginCheck!.status).toBe("pass");
+			expect(pluginCheck!.message).toContain("node_modules/opencode-evomap-bridge");
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	test("memory graph warns when file absent", async () => {
 		const directory = await mkdtemp(path.join(tmpdir(), "doctor-test-"));
 		try {

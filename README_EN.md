@@ -144,6 +144,11 @@ General settings:
 
 Check evolver integration health:
 
+doctor supports both plugin registration modes:
+
+- Local development mode: `<project>/.opencode/plugin/evomap.ts`
+- npm-installed mode: `<project>/node_modules/opencode-evomap-bridge/.opencode/plugin/evomap.ts`
+
 ```typescript
 import { runDoctor, formatDoctorResult } from "opencode-evomap-bridge/doctor";
 

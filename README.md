@@ -133,6 +133,11 @@ npm install -g @evomap/evolver
 
 使用 doctor 工具检查 evolver 集成健康状态：
 
+doctor 同时支持两种插件注册方式：
+
+- 本地开发模式：`<project>/.opencode/plugin/evomap.ts`
+- npm 安装模式：`<project>/node_modules/opencode-evomap-bridge/.opencode/plugin/evomap.ts`
+
 ```typescript
 import { runDoctor, formatDoctorResult } from "opencode-evomap-bridge/doctor";
 

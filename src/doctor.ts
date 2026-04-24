@@ -123,21 +123,48 @@ async function checkMemoryGraph(directory: string): Promise<DoctorCheck> {
 }
 
 async function checkPluginRegistration(directory: string): Promise<DoctorCheck> {
-	const pluginPath = path.join(directory, ".opencode", "plugin", "evomap.ts");
+	const localPluginPath = path.join(directory, ".opencode", "plugin", "evomap.ts");
+	const npmPackagePath = path.join(
+		directory,
+		"node_modules",
+		"opencode-evomap-bridge",
+		"package.json",
+	);
+	const npmPluginPath = path.join(
+		directory,
+		"node_modules",
+		"opencode-evomap-bridge",
+		".opencode",
+		"plugin",
+		"evomap.ts",
+	);
+
 	try {
-		await access(pluginPath);
+		await access(localPluginPath);
 		return {
 			name: "Plugin Registration",
 			status: "pass",
 			message: "Plugin file exists at .opencode/plugin/evomap.ts",
-			detail: pluginPath,
+			detail: localPluginPath,
+		};
+	} catch {
+		// try npm installation mode next
+	}
+
+	try {
+		await Promise.all([access(npmPackagePath), access(npmPluginPath)]);
+		return {
+			name: "Plugin Registration",
+			status: "pass",
+			message: "Plugin package exists in node_modules/opencode-evomap-bridge",
+			detail: npmPluginPath,
 		};
 	} catch {
 		return {
 			name: "Plugin Registration",
 			status: "fail",
-			message: "Plugin file not found",
-			detail: `Expected at: ${pluginPath}`,
+			message: "Plugin not found in local .opencode path or npm installation",
+			detail: `Expected one of: ${localPluginPath} OR ${npmPluginPath}`,
 		};
 	}
 }
