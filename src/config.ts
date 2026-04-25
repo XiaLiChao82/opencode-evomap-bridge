@@ -15,7 +15,6 @@ export const defaultConfig: EvoMapConfig = {
 	debug: false,
 	evolverBinary: "evolver",
 	evolverSpawnTimeoutMs: 5000,
-	evolverFallbackToLocal: true,
 };
 
 export function resolveConfig(

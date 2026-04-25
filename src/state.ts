@@ -1,7 +1,9 @@
 import path from "node:path";
 import type {
+	AppliedEvolverInstruction,
 	EvoMapConfig,
 	ExecutionAdvisory,
+	EvolverGepInstruction,
 	Observation,
 	ProjectState,
 	RawToolSignal,
@@ -152,6 +154,94 @@ export class EvoMapState {
 		);
 		state.updatedAt = nowIso();
 		await this.persistProjectState();
+	}
+
+	async setActiveInstruction(
+		sessionId: string,
+		instruction: EvolverGepInstruction | null,
+	): Promise<void> {
+		const state = await this.getSessionState(sessionId);
+		state.activeInstruction = instruction;
+		state.updatedAt = nowIso();
+		await this.persistSessionState(state);
+	}
+
+	async getActiveInstruction(
+		sessionId: string,
+	): Promise<EvolverGepInstruction | null> {
+		const state = await this.getSessionState(sessionId);
+		const instruction = state.activeInstruction ?? null;
+		if (!instruction) {
+			return null;
+		}
+		const now = Date.now();
+		const expires = Date.parse(instruction.expiresAt);
+		if (now >= expires) {
+			state.activeInstruction = null;
+			state.updatedAt = nowIso();
+			await this.persistSessionState(state);
+			return null;
+		}
+		return instruction;
+	}
+
+	async clearActiveInstruction(sessionId: string): Promise<void> {
+		const state = await this.getSessionState(sessionId);
+		state.activeInstruction = null;
+		state.updatedAt = nowIso();
+		await this.persistSessionState(state);
+	}
+
+	async recordInstructionApplied(
+		sessionId: string,
+		instructionId: string,
+		toolCallId: string,
+	): Promise<void> {
+		const state = await this.getSessionState(sessionId);
+		if (!state.appliedInstructions) {
+			state.appliedInstructions = [];
+		}
+
+		const existing = state.appliedInstructions.find(
+			(entry) => entry.instructionId === instructionId,
+		);
+
+		if (existing) {
+			existing.toolCallIds.push(toolCallId);
+		} else {
+			const instruction = state.activeInstruction;
+			state.appliedInstructions.push({
+				instructionId,
+				geneId: instruction?.geneId ?? null,
+				mutationId: instruction?.mutationId ?? null,
+				injectedAt: nowIso(),
+				toolCallIds: [toolCallId],
+			});
+		}
+
+		if (
+			existing &&
+			existing.toolCallIds.length >= this.config.maxAdvisoryUses
+		) {
+			state.activeInstruction = null;
+		}
+
+		state.updatedAt = nowIso();
+		await this.persistSessionState(state);
+	}
+
+	async getAppliedInstructionForCall(
+		sessionId: string,
+		toolCallId: string,
+	): Promise<AppliedEvolverInstruction | null> {
+		const state = await this.getSessionState(sessionId);
+		const applied = state.appliedInstructions ?? [];
+		for (const entry of applied) {
+			if (entry.toolCallIds.includes(toolCallId)) {
+				return entry;
+			}
+		}
+		return null;
 	}
 
 	private async persistSessionState(state: SessionState): Promise<void> {

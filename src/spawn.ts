@@ -2,15 +2,23 @@ import type { EvolverDetection, EvolverSpawnOptions, EvolverSpawnResult } from "
 
 let cachedDetection: EvolverDetection | null = null;
 let detectionAttempted = false;
+let cachedBinary = "";
 
-export async function detectEvolver(): Promise<EvolverDetection | null> {
-	if (detectionAttempted) {
+export function resetDetectionCache(): void {
+	cachedDetection = null;
+	detectionAttempted = false;
+	cachedBinary = "";
+}
+
+export async function detectEvolver(binary = "evolver"): Promise<EvolverDetection | null> {
+	if (detectionAttempted && cachedBinary === binary) {
 		return cachedDetection;
 	}
 	detectionAttempted = true;
+	cachedBinary = binary;
 
 	try {
-		const whichProc = Bun.spawn(["which", "evolver"], {
+		const whichProc = Bun.spawn(["which", binary], {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
@@ -22,7 +30,7 @@ export async function detectEvolver(): Promise<EvolverDetection | null> {
 
 		let version = "unknown";
 		try {
-			const proc = Bun.spawn(["evolver"], {
+			const proc = Bun.spawn([binary], {
 				stdout: "pipe",
 				stderr: "pipe",
 			});
@@ -44,7 +52,10 @@ export async function detectEvolver(): Promise<EvolverDetection | null> {
 	}
 }
 
-export async function spawnEvolver(options: EvolverSpawnOptions): Promise<EvolverSpawnResult> {
+export async function spawnEvolver(
+	options: EvolverSpawnOptions,
+	binary = "evolver",
+): Promise<EvolverSpawnResult> {
 	const {
 		command,
 		args = [],
@@ -57,7 +68,7 @@ export async function spawnEvolver(options: EvolverSpawnOptions): Promise<Evolve
 	const procArgs = [command, ...args];
 
 	try {
-		const proc = Bun.spawn(["evolver", ...procArgs], {
+		const proc = Bun.spawn([binary, ...procArgs], {
 			stdout: "pipe",
 			stderr: "pipe",
 			stdin: stdin ? "pipe" : undefined,
@@ -107,8 +118,8 @@ export async function spawnEvolver(options: EvolverSpawnOptions): Promise<Evolve
 	}
 }
 
-export async function isEvolverAvailable(): Promise<boolean> {
-	const detection = await detectEvolver();
+export async function isEvolverAvailable(binary = "evolver"): Promise<boolean> {
+	const detection = await detectEvolver(binary);
 	return detection !== null;
 }
 

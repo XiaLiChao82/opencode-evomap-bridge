@@ -22,7 +22,7 @@ export interface DoctorResult {
 }
 
 async function checkEvolverCli(): Promise<DoctorCheck> {
-	const detection = await detectEvolver();
+	const detection = await detectEvolver(defaultConfig.evolverBinary);
 	if (detection) {
 		return {
 			name: "Evolver CLI Detection",
@@ -172,19 +172,10 @@ async function checkPluginRegistration(directory: string): Promise<DoctorCheck> 
 function checkConfiguration(): DoctorCheck {
 	const config = defaultConfig;
 
-	if (!config.evolverFallbackToLocal) {
-		return {
-			name: "Configuration Check",
-			status: "warn",
-			message: "evolverFallbackToLocal is false — plugin will produce no observations if evolver is unavailable",
-			detail: `evolverBinary=${config.evolverBinary}, timeout=${config.evolverSpawnTimeoutMs}ms, fallback=${config.evolverFallbackToLocal}`,
-		};
-	}
-
 	return {
 		name: "Configuration Check",
 		status: "pass",
-		message: `Configuration valid (evolverBinary=${config.evolverBinary}, timeout=${config.evolverSpawnTimeoutMs}ms, fallback=${config.evolverFallbackToLocal})`,
+		message: `Configuration valid (evolverBinary=${config.evolverBinary}, timeout=${config.evolverSpawnTimeoutMs}ms)`,
 	};
 }
 

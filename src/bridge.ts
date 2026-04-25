@@ -1,7 +1,11 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type {
+	AppliedEvolverInstruction,
+	EvoMapConfig,
 	EvolverMemoryEntry,
+	MemoryGraphEvent,
+	MemoryGraphSignalEvent,
 	Observation,
 	ObservationType,
 	RawToolSignal,
@@ -22,7 +26,39 @@ const evolverSignalToObservationType: Record<string, ObservationType> = {
 	log_error: "repeat_failure",
 	test_failure: "repeat_failure",
 	capability_gap: "slow_execution",
+	memory_missing: "slow_execution",
+	user_missing: "slow_execution",
+	session_logs_missing: "slow_execution",
 };
+
+const signalPatternToType: [RegExp, ObservationType][] = [
+	[/error|fail|crash|broken|exception/i, "repeat_failure"],
+	[/success|stable|resolved|passed|completed/i, "repeat_success"],
+	[/slow|timeout|bottleneck|missing|gap|unavailable/i, "slow_execution"],
+];
+
+function resolveObservationType(
+	signals: string[],
+	outcomeStatus: string,
+): ObservationType | null {
+	for (const signal of signals) {
+		if (evolverSignalToObservationType[signal]) {
+			return evolverSignalToObservationType[signal];
+		}
+	}
+
+	for (const signal of signals) {
+		for (const [pattern, type] of signalPatternToType) {
+			if (pattern.test(signal)) {
+				return type;
+			}
+		}
+	}
+
+	if (outcomeStatus === "failed") return "repeat_failure";
+	if (outcomeStatus === "success") return "repeat_success";
+	return null;
+}
 
 export function signalToEvolverEntry(signal: RawToolSignal): EvolverMemoryEntry {
 	const evolverSignals: string[] = [];
@@ -56,9 +92,10 @@ export function signalToEvolverEntry(signal: RawToolSignal): EvolverMemoryEntry 
 }
 
 export function evolverEntryToObservation(entry: EvolverMemoryEntry): Observation | null {
-	const matchingType = entry.signals
-		.map((s) => evolverSignalToObservationType[s])
-		.find((t) => t !== undefined);
+	const matchingType = resolveObservationType(
+		entry.signals,
+		entry.outcome.status,
+	);
 	if (!matchingType) {
 		return null;
 	}
@@ -82,6 +119,32 @@ export function evolverEntryToObservation(entry: EvolverMemoryEntry): Observatio
 	};
 }
 
+function isMemoryGraphEvent(raw: unknown): raw is MemoryGraphEvent {
+	if (typeof raw !== "object" || raw === null) return false;
+	const obj = raw as Record<string, unknown>;
+	return obj.type === "MemoryGraphEvent" && typeof obj.kind === "string" && typeof obj.ts === "string";
+}
+
+export function memoryGraphEventToEntry(event: MemoryGraphEvent): EvolverMemoryEntry | null {
+	const signals = event.signal?.signals ?? [];
+	const status = event.outcome?.status ?? "neutral";
+	const score = event.outcome?.score ?? 0.5;
+	const note = event.outcome?.note ?? `${event.kind}: ${event.signal?.key ?? "unknown"}`;
+	const geneId = event.gene?.id ?? "unknown";
+
+	if (signals.length === 0 && !event.outcome) {
+		return null;
+	}
+
+	return {
+		timestamp: event.ts,
+		gene_id: geneId ?? "unknown",
+		signals,
+		outcome: { status, score, note },
+		source: `evolver:${event.kind}`,
+	};
+}
+
 export async function readMemoryGraph(filePath: string): Promise<EvolverMemoryEntry[]> {
 	try {
 		const raw = await readFile(filePath, "utf8");
@@ -92,7 +155,15 @@ export async function readMemoryGraph(filePath: string): Promise<EvolverMemoryEn
 				continue;
 			}
 			try {
-				entries.push(JSON.parse(trimmed) as EvolverMemoryEntry);
+				const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+				if (isMemoryGraphEvent(parsed)) {
+					const converted = memoryGraphEventToEntry(parsed);
+					if (converted) {
+						entries.push(converted);
+					}
+				} else {
+					entries.push(parsed as unknown as EvolverMemoryEntry);
+				}
 			} catch {
 				continue;
 			}
@@ -136,4 +207,89 @@ export function evolverGEPObservations(memoryEntries: EvolverMemoryEntry[]): Obs
 	}
 
 	return observations;
+}
+
+function computeSignalScore(
+	success: boolean,
+	durationMs: number | null,
+	slowThreshold: number,
+): number {
+	if (!success) return 0.15;
+	if (durationMs !== null && durationMs >= slowThreshold) return 0.65;
+	return 0.85;
+}
+
+function deriveSignalsArray(
+	signal: RawToolSignal,
+	recentSignals: RawToolSignal[],
+	config: EvoMapConfig,
+): string[] {
+	const signals: string[] = [];
+
+	if (!signal.result.success) {
+		signals.push("log_error");
+
+		const recentFailures = recentSignals.filter(
+			(s) =>
+				!s.result.success &&
+				s.tool === signal.tool &&
+				s.result.outputDigest === signal.result.outputDigest,
+		);
+		if (recentFailures.length >= config.repeatFailureThreshold) {
+			signals.push("repeat_failure");
+		}
+	} else {
+		signals.push("stable_success");
+	}
+
+	if (
+		(signal.result.durationMs ?? 0) >= config.slowExecutionMs
+	) {
+		signals.push("slow_execution");
+	}
+
+	return signals;
+}
+
+export function buildMemoryGraphEvent(
+	signal: RawToolSignal,
+	recentSignals: RawToolSignal[],
+	config: EvoMapConfig,
+	appliedInstruction?: AppliedEvolverInstruction | null,
+): MemoryGraphSignalEvent {
+	const status = signal.result.success ? "success" : "failure";
+	const durationMs = signal.result.durationMs ?? 0;
+	const score = computeSignalScore(
+		signal.result.success,
+		signal.result.durationMs,
+		config.slowExecutionMs,
+	);
+	const signals = deriveSignalsArray(signal, recentSignals, config);
+
+	return {
+		type: "MemoryGraphEvent",
+		kind: "signal",
+		id: stableHash(`mgs:${signal.id}:${nowIso()}`),
+		ts: nowIso(),
+		toolName: signal.tool,
+		status,
+		durationMs,
+		signals,
+		errorSignature: signal.result.success
+			? null
+			: stableHash(signal.result.errorSnippet),
+		score,
+		note: clampText(
+			`${signal.tool} call: ${status}${appliedInstruction ? ` (gene: ${appliedInstruction.geneId ?? "none"})` : ""}`,
+			200,
+		),
+		geneId: appliedInstruction?.geneId ?? null,
+		mutationId: appliedInstruction?.mutationId ?? null,
+		mutationCategory: null,
+		riskLevel: null,
+	};
+}
+
+export function memoryGraphEventToJsonl(event: MemoryGraphSignalEvent): string {
+	return JSON.stringify(event);
 }

@@ -1,3 +1,51 @@
+export interface EvolverGepInstruction {
+	id: string;
+	createdAt: string;
+	sessionId: string;
+	projectId: string;
+	prompt: string;
+	geneId: string | null;
+	geneCategory?: string | null;
+	mutationId?: string | null;
+	mutationCategory?: string | null;
+	riskLevel?: string | null;
+	capsuleIds?: string[];
+	source: "evolver.stdout" | "memory_graph";
+	/** Default TTL: 30 min from createdAt */
+	expiresAt: string;
+}
+
+export interface AppliedEvolverInstruction {
+	instructionId: string;
+	geneId: string | null;
+	mutationId?: string | null;
+	injectedAt: string;
+	toolCallIds: string[];
+}
+
+export interface EvolverAnalysisResult {
+	observations: Observation[];
+	instruction: EvolverGepInstruction | null;
+}
+
+export interface MemoryGraphSignalEvent {
+	type: "MemoryGraphEvent";
+	kind: "signal";
+	id: string;
+	ts: string;
+	toolName: string;
+	status: "success" | "failure";
+	durationMs: number;
+	signals: string[];
+	errorSignature: string | null;
+	score: number;
+	note: string;
+	geneId: string | null;
+	mutationId: string | null;
+	mutationCategory: string | null;
+	riskLevel: string | null;
+}
+
 export interface EvoMapConfig {
 	enabled: boolean;
 	maxRecentSignals: number;
@@ -13,7 +61,6 @@ export interface EvoMapConfig {
 	debug: boolean;
 	evolverBinary: string;
 	evolverSpawnTimeoutMs: number;
-	evolverFallbackToLocal: boolean;
 }
 
 export type ToolName =
@@ -85,6 +132,8 @@ export interface SessionState {
 	recentSignals: RawToolSignal[];
 	observations: Observation[];
 	advisories: ExecutionAdvisory[];
+	activeInstruction?: EvolverGepInstruction | null;
+	appliedInstructions?: AppliedEvolverInstruction[];
 	updatedAt: string;
 }
 
@@ -126,6 +175,27 @@ export interface EvolverMemoryEntry {
 		note: string;
 	};
 	source: string;
+}
+
+export interface MemoryGraphEvent {
+	type: "MemoryGraphEvent";
+	kind: "signal" | "hypothesis" | "attempt" | "outcome";
+	id: string;
+	ts: string;
+	signal: {
+		key: string;
+		signals: string[];
+		error_signature: string | null;
+	};
+	outcome?: {
+		status: "success" | "failed";
+		score: number;
+		note: string;
+		observed?: { current_signals?: string[] };
+		predictive?: { signal_clarity?: number; trajectory_trend?: number };
+	};
+	gene?: { id: string | null; category: string | null };
+	mutation?: { id: string; category: string; risk_level?: string };
 }
 
 export interface EvolverSpawnOptions {

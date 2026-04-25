@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2025-04-25
+
+### Added
+
+- **GEP Instruction pipeline**: `parseEvolverRunOutput` extracts GEP protocol prompt from `evolver run` stdout, with noise stripping and structured metadata (gene\_id, mutation\_id, risk\_level) extraction
+- **EvolverAnalysisResult**: new type carrying both observations and GEP instruction to agent via `experimental.chat.system.transform`
+- **Real fitness scores**: `buildMemoryGraphEvent` computes outcome scores (0.85/0.65/0.15) based on success/failure/duration, replacing random `Math.random()` scores
+- **Active instruction lifecycle**: session-scoped GEP instruction with TTL (30 min), use-limit (`maxAdvisoryUses`), auto-clear on expiry, and cross-hook persistence (`setActiveInstruction` / `getActiveInstruction` / `recordInstructionApplied`)
+- **CallID-attributed outcome writing**: `tool.execute.before` captures active instruction snapshot per callID, `tool.execute.after` writes outcome events with gene\_id and mutation\_id
+
+### Changed
+
+- **Strict evolver dependency**: plugin now requires `@evomap/evolver` CLI — removed all local fallback observation rules (`deriveObservations`), removed `evolverFallbackToLocal` config option; without evolver CLI the plugin does nothing
+- **Improved evolver stdout parsing**: strips startup banner and footer noise, extracts gene\_id from `Context [Gene Preview]` JSON blocks using nested JSON parser
+
+### Removed
+
+- `deriveObservations()` — local rule engine (repeat\_failure / repeat\_success / slow\_execution)
+- `deriveObservationsWithEvolver()` — old fallback-wrapped evolver caller
+- `evolverFallbackToLocal` config field
+
+## [0.1.2] - 2025-04-25
+
+### Changed
+
+- Bump version to `0.1.2`
+
 ## [0.1.1] - 2025-04-25
 
 ### Changed
@@ -32,5 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Ignore TypeScript build metadata in `.gitignore` ([`7d12ff4`])
 
+[0.2.0]: https://github.com/XiaLiChao82/opencode-evomap-bridge/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/XiaLiChao82/opencode-evomap-bridge/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/XiaLiChao82/opencode-evomap-bridge/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/XiaLiChao82/opencode-evomap-bridge/releases/tag/v0.1.0

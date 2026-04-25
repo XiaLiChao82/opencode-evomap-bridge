@@ -3,6 +3,8 @@ import {
 	formatMemorySummary,
 	readMemoryGraph,
 	appendMemoryGraph,
+	buildMemoryGraphEvent,
+	memoryGraphEventToJsonl,
 } from "../../src/bridge.ts";
 import {
 	hasSyntheticSentinel,
@@ -11,7 +13,8 @@ import {
 	renderAdvisories,
 } from "../../src/advisory.ts";
 import { resolveConfig } from "../../src/config.ts";
-import { deriveObservationsWithEvolver } from "../../src/evolver.ts";
+import { deriveAnalysisWithEvolver } from "../../src/evolver.ts";
+import { renderGepInstruction } from "../../src/gep.ts";
 import { SignalQueue } from "../../src/queue.ts";
 import {
 	isEvolverAvailable,
@@ -129,6 +132,10 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 	const pendingArgs = new Map<string, Record<string, unknown>>();
 	let internalErrors = 0;
 	let disabled = false;
+	const evolverBinary = config.evolverBinary;
+
+	// Cache pre-warmed by session.created, consumed by system.transform
+	let cachedMemoryEntries: EvolverMemoryEntry[] | null = null;
 
 	const failOpen = async (fn: () => Promise<void>): Promise<void> => {
 		if (disabled) {
@@ -149,14 +156,17 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 
 	const queue = new SignalQueue(config, directory, async (signal, dir) => {
 		await state.appendSignal(signal);
-		const sessionState = await state.getSessionState(signal.sessionId);
-		const observations = await deriveObservationsWithEvolver(
+		const analysis = await deriveAnalysisWithEvolver(
 			signal,
-			sessionState.recentSignals,
 			config,
 			dir,
+			signal.sessionId,
+			signal.projectId,
 		);
-		await state.appendObservations(signal.sessionId, observations);
+		await state.appendObservations(signal.sessionId, analysis.observations);
+		if (analysis.instruction) {
+			await state.setActiveInstruction(signal.sessionId, analysis.instruction);
+		}
 	});
 
 	return {
@@ -170,6 +180,15 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 				const sessionState = await state.getSessionState(input.sessionID);
 				const projectState = state.getProjectState();
 				const isoNow = nowIso();
+
+				const activeInstruction = await state.getActiveInstruction(input.sessionID);
+				if (activeInstruction) {
+					await state.recordInstructionApplied(
+						input.sessionID,
+						activeInstruction.id,
+						input.callID,
+					);
+				}
 
 				const sessionAdvisories = pickAdvisories(
 					tool,
@@ -241,13 +260,31 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 					config,
 				);
 				queue.push(signal);
+
+				const appliedInstruction = await state.getAppliedInstructionForCall(
+					input.sessionID,
+					input.callID,
+				);
+				const sessionState = await state.getSessionState(input.sessionID);
+				const mgEvent = buildMemoryGraphEvent(
+					signal,
+					sessionState.recentSignals,
+					config,
+					appliedInstruction,
+				);
+				const evolverRoot = getEvolverRoot(directory);
+				const memoryPath = getMemoryGraphPath(evolverRoot);
+				const { appendFile: appendFileFn, mkdir: mkdirFn } = await import("node:fs/promises");
+				const pathModule = await import("node:path");
+				await mkdirFn(pathModule.dirname(memoryPath), { recursive: true });
+				await appendFileFn(memoryPath, memoryGraphEventToJsonl(mgEvent) + "\n", "utf8");
 			});
 		},
 
 		event: async (input: { event: { type: string; sessionID?: string; [key: string]: unknown } }) => {
 			if (input.event.type === "session.created") {
 				await failOpen(async () => {
-					const available = await isEvolverAvailable();
+					const available = await isEvolverAvailable(evolverBinary);
 					if (!available) {
 						return;
 					}
@@ -264,12 +301,14 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 						return;
 					}
 
-					const summary = formatMemorySummary(recentEntries);
-					if (summary) {
-						console.warn(
-							`[EvoMapBridge/session-start] injected ${recentEntries.length} memory entries for session ${input.event.sessionID ?? "unknown"}`,
-						);
-						if (config.debug) {
+					cachedMemoryEntries = recentEntries;
+
+					console.warn(
+						`[EvoMapBridge/session-start] cached ${recentEntries.length} memory entries for session ${input.event.sessionID ?? "unknown"}`,
+					);
+					if (config.debug) {
+						const summary = formatMemorySummary(recentEntries);
+						if (summary) {
 							console.warn("[EvoMapBridge/session-start]", summary);
 						}
 					}
@@ -278,7 +317,7 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 
 			if (input.event.type === "session.idle") {
 				await failOpen(async () => {
-					const available = await isEvolverAvailable();
+					const available = await isEvolverAvailable(evolverBinary);
 					if (!available) {
 						return;
 					}
@@ -308,11 +347,14 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 					}
 
 					try {
-						const result = await spawnEvolver({
-							command: "run",
-							cwd: directory,
-							timeoutMs: config.evolverSpawnTimeoutMs,
-						});
+						const result = await spawnEvolver(
+							{
+								command: "run",
+								cwd: directory,
+								timeoutMs: config.evolverSpawnTimeoutMs,
+							},
+							evolverBinary,
+						);
 						if (result.timedOut) {
 							console.warn("[EvoMapBridge/session-end] evolver run timed out");
 						} else if (result.exitCode !== 0) {
@@ -332,39 +374,37 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 			output: { system: string[] },
 		) => {
 			await failOpen(async () => {
-				const available = await isEvolverAvailable();
-				if (!available) {
-					const sessionState = _input.sessionID
-						? await state.getSessionState(_input.sessionID)
-						: null;
-					const projectState = state.getProjectState();
-					const activeObservations = [
-						...(sessionState?.observations ?? []),
-						...projectState.observations,
-					];
-					if (activeObservations.length === 0) {
-						return;
+				// 1. Inject active GEP instruction if present
+				if (_input.sessionID) {
+					const activeInstruction = await state.getActiveInstruction(_input.sessionID);
+					if (activeInstruction) {
+						output.system.push(renderGepInstruction(activeInstruction));
 					}
-					const summary = activeObservations
-						.slice(-5)
-						.map((obs) => `[${obs.type}] ${obs.message}`)
-						.join("\n");
-					output.system.push(
-						`[EvoMap Bridge] Active observations:\n${summary}`,
-					);
+				}
+
+				// 2. Inject evolver memory summary from session start cache
+				const recentEntries = cachedMemoryEntries;
+				cachedMemoryEntries = null;
+
+				if (recentEntries && recentEntries.length > 0) {
+					const memorySummary = formatMemorySummary(recentEntries);
+					if (memorySummary) {
+						output.system.push(memorySummary);
+					}
 					return;
 				}
 
+				// 3. Fallback: read memory graph directly (no local observations)
 				const evolverRoot = getEvolverRoot(directory);
 				const memoryPath = getMemoryGraphPath(evolverRoot);
 				const allEntries = await readMemoryGraph(memoryPath);
-				const recentEntries = allEntries.slice(-10);
+				const lastEntries = allEntries.slice(-10);
 
-				if (recentEntries.length === 0) {
+				if (lastEntries.length === 0) {
 					return;
 				}
 
-				const memorySummary = formatMemorySummary(recentEntries);
+				const memorySummary = formatMemorySummary(lastEntries);
 				if (memorySummary) {
 					output.system.push(memorySummary);
 				}
@@ -397,7 +437,7 @@ export const EvoMapBridgePlugin: Plugin = async ({ directory }) => {
 					parts.push(`[EvoMap Bridge] Project observations:\n${projSummary}`);
 				}
 
-				const available = await isEvolverAvailable();
+				const available = await isEvolverAvailable(evolverBinary);
 				if (available) {
 					const evolverRoot = getEvolverRoot(directory);
 					const memoryPath = getMemoryGraphPath(evolverRoot);
