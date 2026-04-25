@@ -40,7 +40,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/XiaLiChao82/opencode-evomap-bridge"
+		"url": "git+https://github.com/XiaLiChao82/opencode-evomap-bridge.git"
 	},
 	"publishConfig": {
 		"access": "public"
